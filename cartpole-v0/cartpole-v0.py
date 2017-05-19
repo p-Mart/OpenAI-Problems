@@ -16,13 +16,13 @@ class Memory(object):
 class Experience(object):
 	def __init__(self):
 		self.experience = deque([])
-		self.size = 500
-		self.batch_size = 50
+		self.size = 0
+		self.batch_size = 100
 
 	def storeMemory(self, m):
 		assert m.__class__.__name__ == "Memory"
 
-		if(self.size >= 500):
+		if(self.size >= 1000):
 			self.experience.popleft()
 			self.size -= 1
 
@@ -30,15 +30,19 @@ class Experience(object):
 		self.size += 1
 
 	def returnBatch(self):
-		s = np.array((self.batch_size, 4))
-		a = np.array((self.batch_size, 2))
-		s_ = np.array((self.batch_size, 4))
+		s = np.empty((self.batch_size, 4))
+		a = np.empty((self.batch_size, 2))
+		s_ = np.empty((self.batch_size, 4))
 
-		for i in range(self.batch_size):
-			rand = random.randint(self.size)
+		batch = self.batch_size if (self.size >= self.batch_size) \
+				else self.size
+
+		for i in range(batch):
+			rand = random.randint(0, self.size-1)
 			s[i] = self.experience[rand].s
 			a[i] = self.experience[rand].a
 			s_[i] = self.experience[rand].s_
+
 
 		return s, a, s_
 
@@ -104,13 +108,13 @@ def toLogit(x, len):
 
 def run():
 
-	epsilon = 0.01 #Exploration probability
-	max_frames = 200
+	epsilon = 1.00 #Exploration probability
+	max_frames = 300
 	frame_cutoff = 20
 	episodes = 20000
-	NODES_H1 = 2
-	NODES_H2 = 2
-	learning_rate = 1e-3
+	NODES_H1 = 4
+	NODES_H2 = 4
+	learning_rate = 1e-2
 
 	sess = tf.InteractiveSession()
 	###########Actor Network#############
@@ -134,14 +138,14 @@ def run():
 	W_out = tf.Variable(tf.truncated_normal([NODES_H2, 2], stddev=0.1))
 	b_out = tf.Variable(tf.constant(0.1, shape=[2]))
 
-	output = tf.matmul(h2_drop, W_out) + b_out
-	get_action = tf.argmax(tf.nn.softmax(output), 1)
+	output = tf.nn.softmax(tf.matmul(h2_drop, W_out) + b_out)
+	get_action = tf.argmax(output, 1)
 	
 	#actor = ActorNetwork(sess, learning_rate)
 
 	###########Target Network#############
 	x_t = tf.placeholder(tf.float32, [None, 4])
-	gamma = tf.constant(0.5)
+	gamma = tf.constant(0.2)
 
 	W_h1_t = tf.Variable(tf.truncated_normal([4, NODES_H1], stddev=0.1))
 	b_h1_t = tf.Variable(tf.constant(0.1, shape=[NODES_H1]))
@@ -159,20 +163,24 @@ def run():
 	W_out_t = tf.Variable(tf.truncated_normal([NODES_H2, 2], stddev=0.1))
 	b_out_t = tf.Variable(tf.constant(0.1, shape=[2]))
 
-	target = tf.scalar_mul(gamma, (tf.matmul(h2_drop_t, W_out_t) + b_out_t))
-	get_action_t = tf.argmax(tf.nn.softmax(target), 1)
-
+	target = tf.nn.softmax(tf.matmul(h2_drop_t, W_out_t) + b_out_t)
 	#target = tf.placeholder(tf.float32, [None, 2])
 
-
-	loss = tf.reduce_mean(tf.square(target - output))
+	#reward = tf.constant(1.0, shape=[2])
+	loss = tf.reduce_mean(tf.square(tf.scalar_mul(gamma, target) - output))
 
 	
-	train_step = tf.train.AdamOptimizer(learning_rate).minimize(loss)
+	optimizer = tf.train.AdamOptimizer(learning_rate)
+
+	train_both = optimizer.minimize(loss)
+	train_actor = optimizer.minimize(loss, var_list=[W_h1, W_h2, W_out])
 	
 	sess.run(tf.global_variables_initializer())
 
 	tf.get_default_graph().finalize()
+
+	#Initialize Memory
+	experience = Experience()
 
 	#Training loop
 	for episode in range(episodes):
@@ -183,16 +191,13 @@ def run():
 		#if (episode+1) % 500 == 0 and frame_cutoff != max_frames:
 		#	frame_cutoff += 1
 
-		experience_x = []
-		experience_y = []
-
 		for frame in range(max_frames):
 			#env.render()
 
 			#Take an action
 			if (random.random() < epsilon):
 				action = env.action_space.sample()
-				observation, reward, done, info = env.step(action)
+				next_observation, reward, done, info = env.step(action)
 			else:
 				
 				action = get_action.eval(feed_dict={
@@ -200,53 +205,41 @@ def run():
 							keep_prob:1.0})
 				
 				#action = get_action(observation)
-				action = int(action[0])
-				observation, reward, done, info = env.step(action)
+				#action = int(action[0])
+				next_observation, reward, done, info = env.step(int(action[0]))
 
 			#Update memory
-			experience_x.append(observation)
-			experience_y.append(toLogit(action, 2))
+			experience.storeMemory(Memory(
+					s=observation,
+					a=action,
+					s_=next_observation))
 
+			observation = next_observation
 			#Check for done flag
-			if not done:
-				if (frame+1) % frame_cutoff == 0:
-					#Train if memory full
-					train_step.run(feed_dict={
-						x : np.array(experience_x),
-						x_t: np.array(experience_x),
-						keep_prob : 0.5})
-					
-					experience_x = []
-					experience_y = []
-			else:
-				#Negative reinforcement
+			if done:
+				s, a, s_ = experience.returnBatch()
 
-				if(frame < frame_cutoff):
-					for i in range(len(experience_y)):
-						for j in range(len(experience_y[i])):
-							if experience_y[i][j] == 0:
-								experience_y[i][j] = 1
-							else:
-								experience_y[i][j] = 0
-
-					train_step.run(feed_dict={
-							x : np.array(experience_x), 
-							x_t: np.array(experience_x),
+				if(episode+1 % 100 == 0):
+					train_both.run(feed_dict={
+							x : s, 
+							x_t: s_,
+							keep_prob : 0.5})
+				else:
+					train_actor.run(feed_dict={
+							x : s, 
+							x_t: s_,
 							keep_prob : 0.5})
 
-					experience_x = []
-					experience_y = []
-				
 				#End episode
 				break
 
 		#Modify exploration probability
-		if epsilon > 0.01:
+		if epsilon > 0.1:
 			epsilon = epsilon / 1.001
 		else:
-			epsilon = 0.01
+			epsilon = 0.1
 
-		print "Episode", episode, ", frames", frame
+		print "Episode", episode, ", frames", frame, "eps ", epsilon
 
 
 	sess.close()
