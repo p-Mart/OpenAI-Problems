@@ -2,9 +2,47 @@ import gym
 import tensorflow as tf
 import numpy as np
 import random
+from collections import deque
 
 #OpenAI Gym code.
 env = gym.make('CartPole-v0')
+
+class Memory(object):
+	def __init__(self, s, a, s_):
+		self.s = s
+		self.a = a
+		self.s_ = s_
+
+class Experience(object):
+	def __init__(self):
+		self.experience = deque([])
+		self.size = 500
+		self.batch_size = 50
+
+	def storeMemory(self, m):
+		assert m.__class__.__name__ == "Memory"
+
+		if(self.size >= 500):
+			self.experience.popleft()
+			self.size -= 1
+
+		self.experience.append(m)
+		self.size += 1
+
+	def returnBatch(self):
+		s = np.array((self.batch_size, 4))
+		a = np.array((self.batch_size, 2))
+		s_ = np.array((self.batch_size, 4))
+
+		for i in range(self.batch_size):
+			rand = random.randint(self.size)
+			s[i] = self.experience[rand].s
+			a[i] = self.experience[rand].a
+			s_[i] = self.experience[rand].s_
+
+		return s, a, s_
+
+
 
 
 '''
