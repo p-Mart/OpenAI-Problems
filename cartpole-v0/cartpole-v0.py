@@ -25,20 +25,36 @@ def toLogit(x, len):
 
 def run():
 
-
-
 	epsilon = 1.0 #Exploration probability
-	max_frames = 100
+	max_frames = 200
 	frame_cutoff = 20
-	episodes = 2000
+	episodes = 20000
 
 	#Network architecture
 	x = tf.placeholder(tf.float32, [None, 4])
-	W = tf.Variable(tf.truncated_normal([4, 2], stddev=0.1))
-	b = tf.Variable(tf.constant(0.1, shape=[2]))
+	keep_prob = tf.placeholder(tf.float32)
 
-	output = tf.nn.relu(tf.matmul(x, W) + b)
+	W_h1 = tf.Variable(tf.truncated_normal([4, 8], stddev=0.1))
+	b_h1 = tf.Variable(tf.constant(0.1, shape=[8]))
+
+	h1 = tf.nn.relu(tf.matmul(x, W_h1) + b_h1)
+	h1_drop = tf.nn.dropout(h1, keep_prob)
+
+
+	W_h2 = tf.Variable(tf.truncated_normal([8, 8], stddev=0.1))
+	b_h2 = tf.Variable(tf.constant(0.1, shape=[8]))
+
+	h2 = tf.nn.relu(tf.matmul(h1_drop, W_h2) + b_h2)
+	h2_drop = tf.nn.dropout(h2, keep_prob)
+
+	W_out = tf.Variable(tf.truncated_normal([8, 2], stddev=0.1))
+	b_out = tf.Variable(tf.constant(0.1, shape=[2]))
+
+	output = tf.matmul(h2_drop, W_out) + b_out
+
 	target = tf.placeholder(tf.float32, [None, 2])
+
+	get_action = tf.argmax(tf.nn.softmax(output), 1)
 
 	cross_entropy = tf.reduce_mean(
 		tf.nn.softmax_cross_entropy_with_logits(labels=target, logits=output))
@@ -49,47 +65,54 @@ def run():
 	sess = tf.InteractiveSession()
 	sess.run(tf.global_variables_initializer())
 
+	tf.get_default_graph().finalize()
+
+
+	#Training loop
 	for episode in range(episodes):
 		
 		observation = env.reset()
 
 		#Reduce rate of positive reinforcement over time
-		if (episode+1) % 200 == 0 and frame_cutoff != max_frames:
-			frame_cutoff += 5
+		#if (episode+1) % 500 == 0 and frame_cutoff != max_frames:
+		#	frame_cutoff += 1
 
 		experience_x = []
 		experience_y = []
 
 		for frame in range(max_frames):
-			env.render()
+			#env.render()
 
 			#Take an action
 			if (random.random() < epsilon):
 				action = env.action_space.sample()
 				observation, reward, done, info = env.step(action)
 			else:
-				action = tf.argmax(tf.nn.softmax(output), 1).eval(
-					feed_dict={x:np.array(observation).reshape((1,4))})
+				action = get_action.eval(feed_dict={
+								x:np.array(observation).reshape((1,4)), 
+								keep_prob:1.0})
 
 				action = int(action[0])
 				observation, reward, done, info = env.step(action)
 
+			#Update memory
+			experience_x.append(observation)
+			experience_y.append(toLogit(action, 2))
+
 			#Check for done flag
 			if not done:
-				if (frame+1) % frame_cutoff != 0:
-					#Update memory
-					experience_x.append(observation)
-					experience_y.append(toLogit(action, 2))
-				else:
-					#Train if memory full (lol)
+				if (frame+1) % frame_cutoff == 0:
+					#Train if memory full
 					train_step.run(feed_dict={
-						x:np.array(experience_x), target:np.array(experience_y)})
+						x : np.array(experience_x),
+						target : np.array(experience_y), 
+						keep_prob : 0.5})
 					
 					experience_x = []
 					experience_y = []
-
 			else:
 				#Negative reinforcement
+
 				if(frame < frame_cutoff):
 					for i in range(len(experience_y)):
 						for j in range(len(experience_y[i])):
@@ -99,7 +122,9 @@ def run():
 								experience_y[i][j] = 0
 
 					train_step.run(feed_dict={
-							x:np.array(experience_x), target:np.array(experience_y)})
+							x : np.array(experience_x), 
+							target : np.array(experience_y),
+							keep_prob : 0.5})
 
 					experience_x = []
 					experience_y = []
@@ -107,15 +132,16 @@ def run():
 				#End episode
 				break
 
-		print len(experience_x)
-
 		#Modify exploration probability
-		if epsilon > 0.25:
-			epsilon = epsilon / 1.01
+		if epsilon > 0.01:
+			epsilon = epsilon / 1.001
 		else:
-			epsilon = 0.1
+			epsilon = 0.01
 
 		print "Episode", episode, ", frames", frame
+
+
+	sess.close()
 
 if __name__ == '__main__':
 	#debug()
